@@ -35,13 +35,18 @@ def fetch_passports_from_wmo_id(wmo_id):
     wigos_ids = [f'0-22000-{num}-{wmo_id}' for num in range(1000)]
     oceanops_info = {}
 
+    denied_count = 0
     for wigos_id in wigos_ids:
         _, _, passport_num, _ = wigos_id.split('-')
         url = f'https://www.ocean-ops.org/api/data/platforms/{wigos_id}'
         response = requests.patch(url, headers=headers, json={})
         if response.status_code == 403:
-            print("Acces denied! Check you are authorised for this wmo")
-            return pd.DataFrame()
+            print(f"Access denied! Check you are authorised for this wmo {wmo_id}. Wigos ID {wigos_id}")
+            denied_count += 1
+            if denied_count > 5:
+                print(f"Access denied 5 times! Aborting for this wmo {wmo_id}.")
+                return
+            continue
         if response.status_code == 404:
             print(f"Maxed out at {wigos_id} which does not exist. Total existing wigos IDs = {passport_num}")
             break
@@ -59,8 +64,9 @@ def fetch_passports_from_wmo_id(wmo_id):
                 flat_ddict[f'{key}_{sub_key}'] = str(sub_val)
         oceanops_info_flat[dataset_id] = flat_ddict
     df_oceanops = pd.DataFrame(oceanops_info_flat).T
-    df_oceanops['deployment_date'] = pd.to_datetime(df_oceanops.deployment_date)
-    df_oceanops['retrieval_startDate'] = pd.to_datetime(df_oceanops.retrieval_startDate)
+    for date_field in ['deployment_date', 'retrieval_startDate', 'retrieval_endDate']:
+        if date_field in list(df_oceanops):
+            df_oceanops[date_field] = pd.to_datetime(df_oceanops[date_field])
     df_oceanops = df_oceanops.sort_values('deployment_date')
     return df_oceanops
 
@@ -107,7 +113,7 @@ def match_wmo_platform_meta(df_oceanops, df_platform):
     unmatched_wigos = set(df_oceanops.index).difference(set(df_platform.wigosId))
     if unmatched_wigos:
         print("No corresponding dataset found on ERDDAP for assigned wigos passports:")
-        print(df_oceanops[df_oceanops.wigosId.isin(unmatched_wigos)][['wigosId', 'deployment_date', 'retrieval_startDate']])
+        print(df_oceanops[df_oceanops.wigosId.isin(unmatched_wigos)][['deployment_date', 'retrieval_startDate']])
     dfa = df_platform[
         ['datasetID', 'mission', 'title', 'deployment_date', 'recovery_date', 'wigosId', 'gtsId', 'platform_serial']]
     dfa = dfa[dfa.wigosId!=''] # drop lines that do not have a wigos passport
@@ -182,9 +188,9 @@ def write_goos_tables(df, output_dir):
                 continue
             if attrs['sensor'][:6] != 'SENSOR':
                 continue
-            if 'ad2cp' in attrs['sensor']:
-                continue
             sensor_dict = ds[attrs['sensor']].attrs
+            if 'ad2cp' in sensor_dict['sensor_model'].lower():
+                continue
             if 'standard_name' not in attrs.keys():
                 continue
             sensor_dict = {
@@ -212,6 +218,7 @@ class Passports:
     def __init__(self):
         self.platform_wmo = {}
         self.df_passport = pd.DataFrame()
+        self.df_oceanops= pd.DataFrame()
         self.output_dir = Path('.')
         self.passport_file = self.output_dir / 'passport_info.csv'
 
@@ -229,7 +236,7 @@ class Passports:
         for platform_serial, wmo in self.platform_wmo.items():
             df_oceanops = fetch_passports_from_wmo_id(wmo)
             if df_oceanops.empty:
-                return
+                continue
             df_platform = fetch_platform_meta(platform_serial)
             df_combined = match_wmo_platform_meta(df_oceanops, df_platform)
             df = pd.concat((df, df_combined))
@@ -251,12 +258,11 @@ def main():
         'SEA067': 6801507,
         'SEA068': 6801602,
         'SEA069': 6801506,
-        #'SEA070': 8901002, access denied
-        #'SEA076': 6801665, access denied
+        'SEA076': 6801665,
         'SEA077': 8901050,
         'SEA078': 8901000,
         'SEA079': 8901001,
-        #'SHW001': 8901081, access denied
+        'SHW001': 8901081,
         'SHW002': 8901183,
         'SHW003': 8901204,
     }
