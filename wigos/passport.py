@@ -1,11 +1,9 @@
 import json
 from pathlib import Path
 import requests
-import xarray as xr
 import numpy as np
 import datetime
 import pandas as pd
-import matplotlib.pyplot as plt
 from erddapy import ERDDAP
 
 if Path('../secrets.json').exists():
@@ -15,6 +13,11 @@ headers = {
     'Content-Type': 'application/json' ,
     'accept': 'application/json' ,
     **oceanops_auth
+}
+
+non_standard_ends = {
+    'SEA061_M63': 'hit-by-ship',
+    'SEA078_M43': 'unknown',
 }
 
 def init_erddap():
@@ -127,6 +130,7 @@ def write_goos_tables(df, output_dir):
     sensor_dicts = []
     for i, row in df.iterrows():
         e.dataset_id = row.datasetID
+        model = 'seaexplorer- shallow' if 'SHW' in row.datasetID else 'seaexplorer'
         passport_id = row.wigosId
         if not passport_id or not row.datasetID:
             continue
@@ -134,16 +138,17 @@ def write_goos_tables(df, output_dir):
             continue
         print(f"adding data from {row.datasetID}")
         platform_serial = row.platform_serial
+        mission_id = f"{platform_serial}_M{row.mission}"
         ds = e.to_xarray()
         attrs = ds.attrs
         passport_dict = {'PASSPORT IDENTIFIER': passport_id,
-                         'PROGRAM': 'VOTO: Ocean Knowledge glider program',
-                         'PLATFORM MODEL': 'SeaExplorer X2',
+                         'PROGRAM': 'voto-ocean-knowledge-glider-program',
+                         'PLATFORM MODEL': model,
                          'PLATFORM SERIAL NUMBER': platform_serial,
                          'DEPLOYMENT DATE': str(ds.time.values[~np.isnan(ds.time)][0])[:19] + 'Z',
                          'DEPLOYMENT LATITUDE': ds.latitude.values[~np.isnan(ds.latitude)][0],
                          'DEPLOYMENT LONGITUDE': ds.longitude.values[~np.isnan(ds.longitude)][0],
-                         'DEPLOYMENT SHIP': 'Seeker',  # tbd
+                         'DEPLOYMENT SHIP': 'OCEAN SEEKER',  # tbd
                          'GTS ID': int(attrs['wmo_id']),
                          'TELECOM TYPE': 'iridium',
                          }
@@ -151,17 +156,20 @@ def write_goos_tables(df, output_dir):
         # conditional entries
         conditional_dict = {
             'PRINCIPAL INVESTIGATOR': 'Louise Biddle',
-            'AGENCIES': 'VOTO',
-            'AGENCY_ROLES': 'operating agency',
+            'AGENCIES': 'voto',
+            'AGENCY_ROLES': 'operating-agency',
             'CONTRIBUTORS': attrs['contributor_name'],
             'CONTRIBUTOR_ROLE': attrs['contributor_role']
 
         }
         end_time = ds.time.values[~np.isnan(ds.time)][-1]
-
+        if mission_id in non_standard_ends.keys():
+            ending_cause = non_standard_ends[mission_id]
+        else:
+            ending_cause = 'voluntary-recovery-of-the-platform'
         if end_time < np.datetime64(datetime.datetime.now() - datetime.timedelta(days=3)):
             passport_dict['END DATE'] = str(ds.time.values[~np.isnan(ds.time)][-1])[:19] + 'Z'
-            passport_dict['ENDING CAUSE'] = 'voluntary-recovery-of-the-platform'
+            passport_dict['ENDING CAUSE'] = ending_cause
         passport_dict = passport_dict | conditional_dict
         passport_dicts.append(passport_dict)
 
@@ -173,6 +181,8 @@ def write_goos_tables(df, output_dir):
             if 'sensor' not in attrs.keys():
                 continue
             if attrs['sensor'][:6] != 'SENSOR':
+                continue
+            if 'ad2cp' in attrs['sensor']:
                 continue
             sensor_dict = ds[attrs['sensor']].attrs
             if 'standard_name' not in attrs.keys():
